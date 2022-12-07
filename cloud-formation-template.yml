@@ -1,0 +1,108 @@
+Description: CI/CD For Spam Email Classifier
+
+Parameters:
+  SagemakerEndpointName:
+    Type: String
+    Default: sms-spam-classifier-mxnet-2022-12-06-21-00-58-492
+
+Resources:
+  EmailsBucketPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: HandleEmailLambda
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref HandleEmailLambda
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+
+  EmailsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: EmailsBucket
+    Properties:
+      Bucket: !Ref EmailsBucket
+      PolicyDocument:
+        Id: SESAccessPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSESPuts
+            Effect: Allow
+            Principal:
+              Service: 'ses.amazonaws.com'
+            Action: 's3:PutObject'
+            Resource: !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref EmailsBucket
+                - /*
+            Condition:
+              StringEquals:
+                "AWS:SourceAccount": !Ref "AWS::AccountId"
+
+  EmailsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: EmailsBucketPermission
+    Properties:
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt HandleEmailLambda.Arn
+
+  LambdasRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+          "Statement" : [{
+            "Effect": "Allow",
+            "Principal": { "Service": [ "lambda.amazonaws.com" ] },
+            "Action": [ "sts:AssumeRole" ]
+          }]
+        }
+      Policies:
+        - PolicyName: lambdas-execution-role
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - s3:*
+                  - sagemaker:*
+                  - ses:*
+
+  HandleEmailLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: placeholder
+      FunctionName: handle_email_cf
+      Environment: 
+        Variables: 
+          ENDPOINT_NAME : !Ref SagemakerEndpointName
+      Layers:
+        - arn:aws:lambda:us-east-1:668099181075:layer:AWSLambda-Python37-SciPy1x:115
+      Role: !GetAtt LambdasRole.Arn
+      Runtime: python3.7
+      Handler: handle_email.lambda_handler
+      Timeout: 15
+
+  SESReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: EmailsBucketPolicy
+    Properties:
+      RuleSetName: StoreToS3InboundRuleSet
+      Rule:
+        Actions:
+          - S3Action:
+              BucketName: !Ref EmailsBucket
+        Enabled: True
+
+  SESReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: StoreToS3InboundRuleSet
+
